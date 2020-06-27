@@ -2,10 +2,35 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 
+	jwtmiddleware "github.com/auth0/go-jwt-middleware"
+	"github.com/dgrijalva/jwt-go"
 	"github.com/gorilla/mux"
+	"github.com/rs/cors"
 )
+
+// Response is a new type that contains a message
+type Response struct {
+	Message string `json:"message"`
+}
+
+// Jwks is a new type that contains a slice of JSON web keys
+type Jwks struct {
+	Keys []JSONWebKeys `json:"keys"`
+}
+
+// JSONWebKeys is a struct that contains fields related to the JSON Web Key Set for this API
+// These keys contain public keys, which will be used to verify JWTs
+type JSONWebKeys struct {
+	Kty string   `json:"kty"`
+	Kid string   `json:"kid"`
+	Use string   `json:"use"`
+	N   string   `json:"n"`
+	E   string   `json:"e"`
+	X5c []string `json:"x5c"`
+}
 
 // Product is a new type that contains info about VR experiences
 type Product struct {
@@ -68,6 +93,32 @@ var FeedbackHandler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Reque
 })
 
 func main() {
+	jwtMiddleware := jwtmiddleware.New(jwtmiddleware.Options{
+		ValidationKeyGetter: func(token *jwt.Token) (interface{}, error) {
+			// Verify 'aud' claim
+			aud := "https://dev-3twb0sk2.auth0.com/"
+			checkAud := token.Claims.(jwt.MapClaims).VerifyAudience(aud, false)
+			if !checkAud {
+				return token, errors.New("Invalid audience")
+			}
+			// Verify 'iss' claim
+			iss := "https://golang-vr"
+			checkIss := token.Claims.(jwt.MapClaims).VerifyIssuer(iss, false)
+			if !checkIss {
+				return token, errors.New("Invalid issuer")
+			}
+
+			cert, err := getPemCert(token)
+			if err != nil {
+				panic(err.Error())
+			}
+
+			result, _ := jwt.ParseRSAPublicKeyFromPEM([]byte(cert))
+			return result, nil
+		},
+		SigningMethod: jwt.SigningMethodRS256,
+	})
+
 	// Instantiate gorilla/mux router
 	r := mux.NewRouter()
 
@@ -78,9 +129,44 @@ func main() {
 
 	// API routes
 	r.Handle("/status", StatusHandler).Methods("GET")
-	r.Handle("/products", ProductsHandler).Methods("GET")
-	r.Handle("/products/{slug}/feedback", FeedbackHandler).Methods("POST")
+	r.Handle("/products", jwtMiddleware.Handler(ProductsHandler)).Methods("GET")
+	r.Handle("/products/{slug}/feedback", jwtMiddleware.Handler(FeedbackHandler)).Methods("POST")
+
+	// For dev only - setup CORS so React client can consume API
+	corsWrapper := cors.New(cors.Options{
+		AllowedMethods: []string{"GET", "POST"},
+		AllowedHeaders: []string{"Content-Type", "Origin", "Accept", "*"},
+	})
 
 	// App will run on port 8081
-	http.ListenAndServe(":8081", r)
+	http.ListenAndServe(":8081", corsWrapper.Handler(r))
+}
+
+func getPemCert(token *jwt.Token) (string, error) {
+	cert := ""
+	resp, err := http.Get("https://golang-vr/.well-known/jwks.json")
+
+	if err != nil {
+		return cert, err
+	}
+	defer resp.Body.Close()
+
+	var jwks = Jwks{}
+	err = json.NewDecoder(resp.Body).Decode(&jwks)
+
+	if err != nil {
+		return cert, err
+	}
+
+	for k := range jwks.Keys {
+		if token.Header["kid"] == jwks.Keys[k].Kid {
+			cert = "-----BEGIN CERTIFICATE-----\n" + jwks.Keys[k].X5c[0] + "\n-----END CERTIFICATE-----"
+		}
+	}
+
+	if cert == "" {
+		err := errors.New("Unable to find appropriate key")
+		return cert, err
+	}
+	return cert, nil
 }
