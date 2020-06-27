@@ -1,4 +1,4 @@
-module github.com/ryanmercadante/go-auth0-tut
+module github.com/ryanmercadante/react-go-auth0
 
 go 1.14
 
