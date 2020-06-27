@@ -3,11 +3,14 @@ package main
 import (
 	"encoding/json"
 	"errors"
+	"log"
 	"net/http"
+	"os"
 
 	jwtmiddleware "github.com/auth0/go-jwt-middleware"
 	"github.com/dgrijalva/jwt-go"
 	"github.com/gorilla/mux"
+	"github.com/joho/godotenv"
 	"github.com/rs/cors"
 )
 
@@ -92,17 +95,25 @@ var FeedbackHandler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Reque
 	}
 })
 
+// init is invoked before main()
+func init() {
+	// loads values from .env into the system
+	if err := godotenv.Load(); err != nil {
+		log.Print("No .env file found")
+	}
+}
+
 func main() {
 	jwtMiddleware := jwtmiddleware.New(jwtmiddleware.Options{
 		ValidationKeyGetter: func(token *jwt.Token) (interface{}, error) {
 			// Verify 'aud' claim
-			aud := "https://golang-vr"
+			aud := os.Getenv("AUDIENCE")
 			checkAud := token.Claims.(jwt.MapClaims).VerifyAudience(aud, false)
 			if !checkAud {
 				return token, errors.New("Invalid audience")
 			}
 			// Verify 'iss' claim
-			iss := "https://dev-3twb0sk2.auth0.com/"
+			iss := os.Getenv("ISSUER")
 			checkIss := token.Claims.(jwt.MapClaims).VerifyIssuer(iss, false)
 			if !checkIss {
 				return token, errors.New("Invalid issuer")
@@ -144,7 +155,7 @@ func main() {
 
 func getPemCert(token *jwt.Token) (string, error) {
 	cert := ""
-	resp, err := http.Get("https://dev-3twb0sk2.auth0.com/.well-known/jwks.json")
+	resp, err := http.Get(os.Getenv("JWKS_URI"))
 
 	if err != nil {
 		return cert, err
